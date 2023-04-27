@@ -6,7 +6,8 @@
  */
 
 #include <student/gpu.hpp>
-
+#include <algorithm>
+#include <glm/gtc/matrix_transform.hpp>
 
 
 void clear(GPUMemory& mem, ClearCommand cmd) {
@@ -32,14 +33,21 @@ void clear(GPUMemory& mem, ClearCommand cmd) {
     }
 }
 
+void rasterizeTriangle(GPUMemory& mem, OutVertex* vertices, uint32_t primitiveID) {
+    glm::vec3 positions[3];
+    for (int i = 0; i < 3; ++i) {
+        positions[i] = glm::vec3(vertices[i].gl_Position) / vertices[i].gl_Position.w;
+    }
 
+    glm::vec4 viewport(0, 0, mem.framebuffer.width, mem.framebuffer.height);
+    for (int i = 0; i < 3; ++i) {
+        positions[i] = (positions[i] + 1.0f) * 0.5f * glm::vec3(viewport.z, viewport.w, 1.0f);
+    }
 
-
-void computeVertexID(InVertex& inVertex, uint32_t vertexID){
-  inVertex.gl_VertexID = vertexID;
+    // Implement triangle rasterization and fragment shader invocation here
 }
 
-void readAttributes(InVertex& inVertex, VertexArray& vao, bool indexed, GPUMemory* mem, uint32_t vertexID){
+void readAttributes(InVertex& inVertex, VertexArray& vao, bool indexed, GPUMemory* mem, uint32_t vertexID, uint32_t index) {
   for (int j = 0; j < maxAttributes; j++) {
     if (vao.vertexAttrib[j].type == AttributeType::EMPTY) {
       continue;
@@ -48,104 +56,89 @@ void readAttributes(InVertex& inVertex, VertexArray& vao, bool indexed, GPUMemor
     uint64_t stride = vao.vertexAttrib[j].stride;
     uint64_t offset = vao.vertexAttrib[j].offset;
 
+    if (indexed) {
+      vertexID = index;
+    }
+
     switch (vao.vertexAttrib[j].type) {
-      case AttributeType::FLOAT:
-        inVertex.attributes[j].v1 = *(float*)(mem->buffers[bufferID].data + offset + vertexID * stride);
-        break;
-      case AttributeType::VEC2:
-        inVertex.attributes[j].v2 = *(glm::vec2*)(mem->buffers[bufferID].data + offset + vertexID * stride);
-        break;
-      case AttributeType::VEC3:
-        inVertex.attributes[j].v3 = *(glm::vec3*)(mem->buffers[bufferID].data + offset + vertexID * stride);
-        break;
-      case AttributeType::VEC4:
-        inVertex.attributes[j].v4 = *(glm::vec4*)(mem->buffers[bufferID].data + offset + vertexID * stride);
-        break;
+    case AttributeType::FLOAT:
+      inVertex.attributes[j].v1 = *(float*)(mem->buffers[bufferID].data + offset + vertexID * stride);
+      break;
+    case AttributeType::VEC2:
+      inVertex.attributes[j].v2 = *(glm::vec2*)(mem->buffers[bufferID].data + offset + vertexID * stride);
+      break;
+    case AttributeType::VEC3:
+      inVertex.attributes[j].v3 = *(glm::vec3*)(mem->buffers[bufferID].data + offset + vertexID * stride);
+      break;
+    case AttributeType::VEC4:
+      inVertex.attributes[j].v4 = *(glm::vec4*)(mem->buffers[bufferID].data + offset + vertexID * stride);
+      break;
+    case AttributeType::UINT:
+      inVertex.attributes[j].u1 = *(uint32_t*)(mem->buffers[bufferID].data + offset + vertexID * stride);
+      break;
     }
   }
 }
 
-void runVertexAssembly(InVertex& inVertex, VertexArray& vao, bool indexed, GPUMemory& mem, uint32_t vertexID, uint32_t currentCommand){
+void runVertexAssembly(InVertex& inVertex, VertexArray& vao, bool indexed, GPUMemory& mem, uint32_t vertexID, uint32_t currentCommand) {
   if (indexed) {
     uint64_t indexOffset = vao.indexOffset + (vertexID * static_cast<uint64_t>(vao.indexType));
     uint32_t index = 0;
     switch (vao.indexType) {
-        case IndexType::UINT8:
-            index = *((uint8_t*)(mem.buffers[vao.indexBufferID].data + indexOffset));
-            break;
-        case IndexType::UINT16:
-            index = *((uint16_t*)(mem.buffers[vao.indexBufferID].data + indexOffset));
-            break;
-        case IndexType::UINT32:
-            index = *((uint32_t*)(mem.buffers[vao.indexBufferID].data + indexOffset));
-            break;
+    case IndexType::UINT8:
+      index = *((uint8_t*)(mem.buffers[vao.indexBufferID].data + indexOffset));
+      break;
+    case IndexType::UINT16:
+      index = *((uint16_t*)(mem.buffers[vao.indexBufferID].data + indexOffset));
+      break;
+    case IndexType::UINT32:
+      index = *((uint32_t*)(mem.buffers[vao.indexBufferID].data + indexOffset));
+      break;
     }
     inVertex.gl_VertexID = index;
-  } else {
+  }
+  else {
     inVertex.gl_VertexID = vertexID;
   }
   inVertex.gl_DrawID = currentCommand;
-  readAttributes(inVertex, vao, indexed, &mem, vertexID);
+  readAttributes(inVertex, vao, indexed, &mem, vertexID, inVertex.gl_VertexID);
 }
+
+
+
+void runPrimitiveAssembly(GPUMemory& mem, Program& prg, VertexArray& vao, OutVertex* outVertices, uint32_t vertexID, uint32_t primitiveID, uint32_t currentCommand, uint32_t nofVertices) {
+    InVertex inVertices[3];
+    ShaderInterface si;
+    for (uint32_t i = 0; i < 3; ++i) {
+        uint32_t index = vertexID + i;
+        if (index >= nofVertices) {
+            break;
+        }
+        runVertexAssembly(inVertices[i], vao, vao.indexBufferID != -1, mem, index, currentCommand);
+        prg.vertexShader(outVertices[i], inVertices[i], si);
+    }
+    rasterizeTriangle(mem, outVertices, primitiveID);
+}
+
+
+
+void computeVertexID(InVertex& inVertex, uint32_t vertexID){
+  inVertex.gl_VertexID = vertexID;
+}
+
+
+
 
 
 
 void draw(GPUMemory& mem, DrawCommand cmd, uint32_t currentCommand) {
     Program prg = mem.programs[cmd.programID];
     VertexArray vao = cmd.vao;
-    bool indexed = vao.indexBufferID != -1;
+    uint32_t nofVertices = cmd.nofVertices;
 
-    for (uint32_t i = 0; i < cmd.nofVertices; ++i) {
-        InVertex inVertex;
-        OutVertex outVertex;
-        if (indexed) {
-            uint64_t indexOffset = vao.indexOffset + (i * static_cast<uint64_t>(vao.indexType));
-            uint32_t index = 0;
-            switch (vao.indexType) {
-                case IndexType::UINT8:
-                    index = *((uint8_t*)(mem.buffers[vao.indexBufferID].data + indexOffset));
-                    break;
-                case IndexType::UINT16:
-                    index = *((uint16_t*)(mem.buffers[vao.indexBufferID].data + indexOffset));
-                    break;
-                case IndexType::UINT32:
-                    index = *((uint32_t*)(mem.buffers[vao.indexBufferID].data + indexOffset));
-                    break;
-            }
-            inVertex.gl_VertexID = index;
-        } else {
-            inVertex.gl_VertexID = i;
-        }
-        inVertex.gl_DrawID = currentCommand;
-
-        // Read the attributes for this vertex from the VAO
-        for (int j = 0; j < maxAttributes; j++) {
-            if (vao.vertexAttrib[j].type == AttributeType::EMPTY) {
-                continue;
-            }
-            int32_t bufferID = vao.vertexAttrib[j].bufferID;
-            uint64_t stride = vao.vertexAttrib[j].stride;
-            uint64_t offset = vao.vertexAttrib[j].offset;
-
-          switch (vao.vertexAttrib[j].type) {
-                  case AttributeType::FLOAT:
-                      inVertex.attributes[j].v1 = *(float*)(mem.buffers[bufferID].data + offset + i * stride);
-                      break;
-                  case AttributeType::VEC2:
-                      inVertex.attributes[j].v2 = *(glm::vec2*)(mem.buffers[bufferID].data + offset + i * stride);
-                      break;
-                  case AttributeType::VEC3:
-                      inVertex.attributes[j].v3 = *(glm::vec3*)(mem.buffers[bufferID].data + offset + i * stride);
-                      break;
-                  case AttributeType::VEC4:
-                      inVertex.attributes[j].v4 = *(glm::vec4*)(mem.buffers[bufferID].data + offset + i * stride);
-                      break;
-              }
-        }
-
-        runVertexAssembly(inVertex, vao, indexed, mem, i, currentCommand);
-        ShaderInterface si;
-        prg.vertexShader(outVertex, inVertex, si);
+    for (uint32_t i = 0; i < nofVertices; i += 3) {
+        OutVertex outVertices[3];
+        runPrimitiveAssembly(mem, prg, vao, outVertices, i, i / 3, currentCommand, nofVertices);
     }
 }
 
