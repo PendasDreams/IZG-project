@@ -24,12 +24,11 @@ void clear(GPUMemory& mem, ClearCommand cmd) {
             mem.framebuffer.color[i * mem.framebuffer.channels + 3] = static_cast<uint8_t>(alpha * 255.f);
         }
     }
-    if (cmd.clearDepth) {
-        float* depthBuffer = new float[mem.framebuffer.width * mem.framebuffer.height];
+   if (cmd.clearDepth) {
+    mem.framebuffer.depth = new float[mem.framebuffer.width * mem.framebuffer.height];
         for (uint32_t i = 0; i < mem.framebuffer.width * mem.framebuffer.height; ++i) {
-            depthBuffer[i] = cmd.depth;
+            mem.framebuffer.depth[i] = cmd.depth;
         }
-        mem.framebuffer.depth = depthBuffer;
     }
 }
 
@@ -100,15 +99,51 @@ void rasterizeTriangle(GPUMemory& mem, OutVertex* vertices, uint32_t primitiveID
           for (int x = minCoords.x; x <= maxCoords.x; ++x) {
 
             glm::vec2 pixelCenter = glm::vec2(x + 0.5f, y + 0.5f);
-            float u = ((positions[1].y - positions[2].y) * (pixelCenter.x - positions[2].x) + (positions[2].x - positions[1].x) * (pixelCenter.y - positions[2].y)) / ((positions[1].y - positions[2].y) * (positions[0].x - positions[2].x) + (positions[2].x - positions[1].x) * (positions[0].y - positions[2].y));
-            float v = ((positions[2].y - positions[0].y) * (pixelCenter.x - positions[2].x) + (positions[0].x - positions[2].x) * (pixelCenter.y - positions[2].y)) / ((positions[1].y - positions[2].y) * (positions[0].x - positions[2].x) + (positions[2].x - positions[1].x) * (positions[0].y - positions[2].y));
+            float denominator = ((positions[1].y - positions[2].y) * (positions[0].x - positions[2].x) + (positions[2].x - positions[1].x) * (positions[0].y - positions[2].y));
+            float u = ((positions[1].y - positions[2].y) * (pixelCenter.x - positions[2].x) + (positions[2].x - positions[1].x) * (pixelCenter.y - positions[2].y)) / denominator;
+            float v = ((positions[2].y - positions[0].y) * (pixelCenter.x - positions[2].x) + (positions[0].x - positions[2].x) * (pixelCenter.y - positions[2].y)) / denominator;
+
             float w = 1 - u - v;
             glm::vec3 barycentricCoords(u, v, w);
-            
+
+            glm::vec3 uncorrectedBarycentricCoords = barycentricCoords;
+
+
+              glm::vec3 correctedBarycentricCoords = glm::vec3(
+                    uncorrectedBarycentricCoords.x / vertices[0].gl_Position.w,
+                    uncorrectedBarycentricCoords.y / vertices[1].gl_Position.w,
+                    uncorrectedBarycentricCoords.z / vertices[2].gl_Position.w);
+                    
+                float barycentricSum = correctedBarycentricCoords.x + correctedBarycentricCoords.y + correctedBarycentricCoords.z;
+                correctedBarycentricCoords /= barycentricSum;
+
+                                // Compute the perspective-correct interpolated depth
+               // Compute the perspective-correct interpolated depth
+                float w0 = vertices[0].gl_Position.w;
+                float w1 = vertices[1].gl_Position.w;
+                float w2 = vertices[2].gl_Position.w;
+
+                float z0 = positions[0].z / w0;
+                float z1 = positions[1].z / w1;
+                float z2 = positions[2].z / w2;
+
+                float perspectiveSum = correctedBarycentricCoords.x / w0 +
+                                      correctedBarycentricCoords.y / w1 +
+                                      correctedBarycentricCoords.z / w2;
+
+                float interpolatedDepth = (z0 * correctedBarycentricCoords.x +
+                                          z1 * correctedBarycentricCoords.y +
+                                          z2 * correctedBarycentricCoords.z) / perspectiveSum;
+
+
+
+
+
 
             if (barycentricCoords.x >= 0 && barycentricCoords.y >= 0 && barycentricCoords.z >= 0) {
                 InFragment inFragment;
-                inFragment.gl_FragCoord = glm::vec4(pixelCenter, 0, 1);
+                inFragment.gl_FragCoord = glm::vec4(pixelCenter, interpolatedDepth, 1);
+
                 inFragment.attributes[0].u1 = primitiveID;
 
 
@@ -118,22 +153,32 @@ void rasterizeTriangle(GPUMemory& mem, OutVertex* vertices, uint32_t primitiveID
                                                       mem.uniforms[0].v1);
 
 
-                for (int i = 0; i < 3; ++i) {
-                    inFragment.attributes[i].v4 = vertices[0].attributes[i].v4 * barycentricCoords.x +
-                                                   vertices[1].attributes[i].v4 * barycentricCoords.y +
-                                                   vertices[2].attributes[i].v4 * barycentricCoords.z;
-                }
+              for (int i = 0; i < 3; ++i) {
+                    inFragment.attributes[i].v4 = vertices[0].attributes[i].v4 * correctedBarycentricCoords.x +
+                                                  vertices[1].attributes[i].v4 * correctedBarycentricCoords.y +
+                                                  vertices[2].attributes[i].v4 * correctedBarycentricCoords.z;
+              }
+
+
+                
 
                 OutFragment outFragment;
                 mem.programs[0].fragmentShader(outFragment, inFragment, tempShaderInterface);
 
 
-                // Write the output color to the framebuffer
-                int idx = static_cast<int>(y * mem.framebuffer.width + x) * mem.framebuffer.channels;
-                mem.framebuffer.color[idx + 0] = static_cast<uint8_t>(outFragment.gl_FragColor.r * 255.f);
-                mem.framebuffer.color[idx + 1] = static_cast<uint8_t>(outFragment.gl_FragColor.g * 255.f);
-                mem.framebuffer.color[idx + 2] = static_cast<uint8_t>(outFragment.gl_FragColor.b * 255.f);
-                mem.framebuffer.color[idx + 3] = static_cast<uint8_t>(outFragment.gl_FragColor.a * 255.f);
+                    // Check if the interpolated depth is less than the depth value currently stored in the depth buffer
+                int depthIdx = static_cast<int>(y * mem.framebuffer.width + x);
+                if (interpolatedDepth < mem.framebuffer.depth[depthIdx]) {
+                    // Update the depth buffer with the new depth value
+                    mem.framebuffer.depth[depthIdx] = interpolatedDepth;
+
+                    // Write the output color to the framebuffer
+                    int idx = depthIdx * mem.framebuffer.channels;
+                    mem.framebuffer.color[idx + 0] = static_cast<uint8_t>(outFragment.gl_FragColor.r * 255.f);
+                    mem.framebuffer.color[idx + 1] = static_cast<uint8_t>(outFragment.gl_FragColor.g * 255.f);
+                    mem.framebuffer.color[idx + 2] = static_cast<uint8_t>(outFragment.gl_FragColor.b * 255.f);
+                    mem.framebuffer.color[idx + 3] = static_cast<uint8_t>(outFragment.gl_FragColor.a * 255.f);
+                }
             }
         }
     }
