@@ -33,7 +33,32 @@ void clear(GPUMemory& mem, ClearCommand cmd) {
     }
 }
 
-void rasterizeTriangle(GPUMemory& mem, OutVertex* vertices, uint32_t primitiveID) {
+glm::vec3 barycentricCoordinates(const glm::vec2& point, const glm::vec3 triangle[3]) {
+    // Compute the area of the main triangle (vertices 0, 1, 2)
+    glm::vec3 edge1 = triangle[1] - triangle[0];
+    glm::vec3 edge2 = triangle[2] - triangle[0];
+    float area = 0.5f * glm::length(glm::cross(edge1, edge2));
+
+    // Compute the area of the sub-triangle formed by the point and two of the vertices
+    glm::vec3 edge3 = glm::vec3(point, 0) - triangle[0];
+    glm::vec3 edge4 = glm::vec3(point, 0) - triangle[1];
+    glm::vec3 edge5 = glm::vec3(point, 0) - triangle[2];
+
+    float area1 = 0.5f * glm::length(glm::cross(edge3, edge5));
+    float area2 = 0.5f * glm::length(glm::cross(edge3, edge4));
+    float area3 = area - area1 - area2;
+
+    // Compute the barycentric coordinates
+    glm::vec3 barycentric(area1 / area, area2 / area, area3 / area);
+
+    return barycentric;
+}
+
+
+
+
+void rasterizeTriangle(GPUMemory& mem, OutVertex* vertices, uint32_t primitiveID, DrawCommand const& drawCmd) {
+    bool backFaceCulling = drawCmd.backfaceCulling;
     glm::vec3 positions[3];
     for (int i = 0; i < 3; ++i) {
         positions[i] = glm::vec3(vertices[i].gl_Position) / vertices[i].gl_Position.w;
@@ -45,7 +70,72 @@ void rasterizeTriangle(GPUMemory& mem, OutVertex* vertices, uint32_t primitiveID
     }
 
     // Implement triangle rasterization and fragment shader invocation here
+    glm::ivec2 minCoords(
+        std::max(0, static_cast<int>(std::floor(std::min(positions[0].x, std::min(positions[1].x, positions[2].x))))),
+        std::max(0, static_cast<int>(std::floor(std::min(positions[0].y, std::min(positions[1].y, positions[2].y))))));
+
+    glm::ivec2 maxCoords(
+        std::min(static_cast<int>(mem.framebuffer.width) - 1, static_cast<int>(std::ceil(std::max(positions[0].x, std::max(positions[1].x, positions[2].x))))),
+        std::min(static_cast<int>(mem.framebuffer.height) - 1, static_cast<int>(std::ceil(std::max(positions[0].y, std::max(positions[1].y, positions[2].y))))));
+
+    ShaderInterface tempShaderInterface;
+    tempShaderInterface.uniforms = &mem.uniforms[0];
+
+
+      glm::vec3 edge1 = positions[1] - positions[0];
+      glm::vec3 edge2 = positions[2] - positions[0];
+      glm::vec3 normal = glm::cross(edge1, edge2);
+      if (backFaceCulling && normal.z >= 0) {
+          return;  // Don't render back-facing triangles
+      }
+
+
+
+
+    for (int y = minCoords.y; y <= maxCoords.y; ++y) {
+          for (int x = minCoords.x; x <= maxCoords.x; ++x) {
+
+            glm::vec2 pixelCenter = glm::vec2(x + 0.5f, y + 0.5f);
+            glm::vec3 barycentricCoords = barycentricCoordinates(pixelCenter, positions);
+            
+
+            if (barycentricCoords.x >= 0 && barycentricCoords.y >= 0 && barycentricCoords.z >= 0) {
+                InFragment inFragment;
+                inFragment.gl_FragCoord = glm::vec4(pixelCenter, 0, 1);
+                inFragment.attributes[0].u1 = primitiveID;
+
+
+                inFragment.attributes[0].v4 = glm::vec4(primitiveID,
+                                                      *reinterpret_cast<float*>(&mem.uniforms[0].u1),
+                                                      *reinterpret_cast<float*>(&mem.uniforms[0].i1),
+                                                      mem.uniforms[0].v1);
+
+
+                for (int i = 0; i < 3; ++i) {
+                    inFragment.attributes[i].v4 = vertices[0].attributes[i].v4 * barycentricCoords.x +
+                                                   vertices[1].attributes[i].v4 * barycentricCoords.y +
+                                                   vertices[2].attributes[i].v4 * barycentricCoords.z;
+                }
+
+                OutFragment outFragment;
+                mem.programs[0].fragmentShader(outFragment, inFragment, tempShaderInterface);
+
+
+                // Write the output color to the framebuffer
+                int idx = static_cast<int>(y * mem.framebuffer.width + x) * mem.framebuffer.channels;
+                mem.framebuffer.color[idx + 0] = static_cast<uint8_t>(outFragment.gl_FragColor.r * 255.f);
+                mem.framebuffer.color[idx + 1] = static_cast<uint8_t>(outFragment.gl_FragColor.g * 255.f);
+                mem.framebuffer.color[idx + 2] = static_cast<uint8_t>(outFragment.gl_FragColor.b * 255.f);
+                mem.framebuffer.color[idx + 3] = static_cast<uint8_t>(outFragment.gl_FragColor.a * 255.f);
+            }
+        }
+    }
 }
+
+
+
+                
+
 
 void readAttributes(InVertex& inVertex, VertexArray& vao, bool indexed, GPUMemory* mem, uint32_t vertexID, uint32_t index) {
   for (int j = 0; j < maxAttributes; j++) {
@@ -106,7 +196,7 @@ void runVertexAssembly(InVertex& inVertex, VertexArray& vao, bool indexed, GPUMe
 
 
 
-void runPrimitiveAssembly(GPUMemory& mem, Program& prg, VertexArray& vao, OutVertex* outVertices, uint32_t vertexID, uint32_t primitiveID, uint32_t currentCommand, uint32_t nofVertices) {
+void runPrimitiveAssembly(GPUMemory& mem, Program& prg, VertexArray& vao, OutVertex* outVertices, uint32_t vertexID, uint32_t primitiveID, uint32_t currentCommand, uint32_t nofVertices, DrawCommand const& drawCmd) {
     InVertex inVertices[3];
     ShaderInterface si;
     for (uint32_t i = 0; i < 3; ++i) {
@@ -117,8 +207,9 @@ void runPrimitiveAssembly(GPUMemory& mem, Program& prg, VertexArray& vao, OutVer
         runVertexAssembly(inVertices[i], vao, vao.indexBufferID != -1, mem, index, currentCommand);
         prg.vertexShader(outVertices[i], inVertices[i], si);
     }
-    rasterizeTriangle(mem, outVertices, primitiveID);
+    rasterizeTriangle(mem, outVertices, primitiveID, drawCmd);
 }
+
 
 
 
@@ -138,9 +229,10 @@ void draw(GPUMemory& mem, DrawCommand cmd, uint32_t currentCommand) {
 
     for (uint32_t i = 0; i < nofVertices; i += 3) {
         OutVertex outVertices[3];
-        runPrimitiveAssembly(mem, prg, vao, outVertices, i, i / 3, currentCommand, nofVertices);
+        runPrimitiveAssembly(mem, prg, vao, outVertices, i, i / 3, currentCommand, nofVertices, cmd);
     }
 }
+
 
 
 
