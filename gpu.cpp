@@ -33,6 +33,10 @@ void clear(GPUMemory& mem, ClearCommand cmd) {
     }
 }
 
+// ... Rest of the code is unchanged ...
+
+
+
 glm::vec3 barycentricCoordinates(const glm::vec2& point, const glm::vec3 triangle[3]) {
     // Compute the area of the main triangle (vertices 0, 1, 2)
     glm::vec3 edge1 = triangle[1] - triangle[0];
@@ -85,7 +89,7 @@ void rasterizeTriangle(GPUMemory& mem, OutVertex* vertices, uint32_t primitiveID
       glm::vec3 edge1 = positions[1] - positions[0];
       glm::vec3 edge2 = positions[2] - positions[0];
       glm::vec3 normal = glm::cross(edge1, edge2);
-      if (backFaceCulling && normal.z >= 0) {
+        if (backFaceCulling && normal.z <= 0) {
           return;  // Don't render back-facing triangles
       }
 
@@ -96,7 +100,10 @@ void rasterizeTriangle(GPUMemory& mem, OutVertex* vertices, uint32_t primitiveID
           for (int x = minCoords.x; x <= maxCoords.x; ++x) {
 
             glm::vec2 pixelCenter = glm::vec2(x + 0.5f, y + 0.5f);
-            glm::vec3 barycentricCoords = barycentricCoordinates(pixelCenter, positions);
+            float u = ((positions[1].y - positions[2].y) * (pixelCenter.x - positions[2].x) + (positions[2].x - positions[1].x) * (pixelCenter.y - positions[2].y)) / ((positions[1].y - positions[2].y) * (positions[0].x - positions[2].x) + (positions[2].x - positions[1].x) * (positions[0].y - positions[2].y));
+            float v = ((positions[2].y - positions[0].y) * (pixelCenter.x - positions[2].x) + (positions[0].x - positions[2].x) * (pixelCenter.y - positions[2].y)) / ((positions[1].y - positions[2].y) * (positions[0].x - positions[2].x) + (positions[2].x - positions[1].x) * (positions[0].y - positions[2].y));
+            float w = 1 - u - v;
+            glm::vec3 barycentricCoords(u, v, w);
             
 
             if (barycentricCoords.x >= 0 && barycentricCoords.y >= 0 && barycentricCoords.z >= 0) {
@@ -278,4 +285,3 @@ glm::vec4 read_texture(Texture const&texture,glm::vec2 uv){
     color[c] = texture.data[(pix.y*texture.width+pix.x)*texture.channels+c]/255.f;
   return color;
 }
-
