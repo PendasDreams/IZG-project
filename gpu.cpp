@@ -32,31 +32,6 @@ void clear(GPUMemory& mem, ClearCommand cmd) {
     }
 }
 
-// ... Rest of the code is unchanged ...
-
-
-
-glm::vec3 barycentricCoordinates(const glm::vec2& point, const glm::vec3 triangle[3]) {
-    // Compute the area of the main triangle (vertices 0, 1, 2)
-    glm::vec3 edge1 = triangle[1] - triangle[0];
-    glm::vec3 edge2 = triangle[2] - triangle[0];
-    float area = 0.5f * glm::length(glm::cross(edge1, edge2));
-
-    // Compute the area of the sub-triangle formed by the point and two of the vertices
-    glm::vec3 edge3 = glm::vec3(point, 0) - triangle[0];
-    glm::vec3 edge4 = glm::vec3(point, 0) - triangle[1];
-    glm::vec3 edge5 = glm::vec3(point, 0) - triangle[2];
-
-    float area1 = 0.5f * glm::length(glm::cross(edge3, edge5));
-    float area2 = 0.5f * glm::length(glm::cross(edge3, edge4));
-    float area3 = area - area1 - area2;
-
-    // Compute the barycentric coordinates
-    glm::vec3 barycentric(area1 / area, area2 / area, area3 / area);
-
-    return barycentric;
-}
-
 
 
 
@@ -103,39 +78,31 @@ void rasterizeTriangle(GPUMemory& mem, OutVertex* vertices, uint32_t primitiveID
             float u = ((positions[1].y - positions[2].y) * (pixelCenter.x - positions[2].x) + (positions[2].x - positions[1].x) * (pixelCenter.y - positions[2].y)) / denominator;
             float v = ((positions[2].y - positions[0].y) * (pixelCenter.x - positions[2].x) + (positions[0].x - positions[2].x) * (pixelCenter.y - positions[2].y)) / denominator;
             float w = 1 - u - v;
-
             float w0 = vertices[0].gl_Position.w;
             float w1 = vertices[1].gl_Position.w;
             float w2 = vertices[2].gl_Position.w;
 
-            glm::vec3 weightedBarycentricCoords(u * w0, v * w1, w * w2);
+            glm::vec3 uncorrectedBarycentricCoords(u * w0, v * w1, w * w2);
 
+            glm::vec3 correctedBarycentricCoords(
+              uncorrectedBarycentricCoords.x / vertices[0].gl_Position.w,
+              uncorrectedBarycentricCoords.y / vertices[1].gl_Position.w,
+              uncorrectedBarycentricCoords.z / vertices[2].gl_Position.w);
 
-            glm::vec3 uncorrectedBarycentricCoords = weightedBarycentricCoords;
+            float barycentricSum = correctedBarycentricCoords.x + correctedBarycentricCoords.y + correctedBarycentricCoords.z;
+            correctedBarycentricCoords /= barycentricSum;
 
+            float z0 = vertices[0].gl_Position.z / vertices[0].gl_Position.w;
+            float z1 = vertices[1].gl_Position.z / vertices[1].gl_Position.w;
+            float z2 = vertices[2].gl_Position.z / vertices[2].gl_Position.w;
 
-              glm::vec3 correctedBarycentricCoords = glm::vec3(
-                    uncorrectedBarycentricCoords.x / vertices[0].gl_Position.w,
-                    uncorrectedBarycentricCoords.y / vertices[1].gl_Position.w,
-                    uncorrectedBarycentricCoords.z / vertices[2].gl_Position.w);
-                    
-                float barycentricSum = correctedBarycentricCoords.x + correctedBarycentricCoords.y + correctedBarycentricCoords.z;
-                correctedBarycentricCoords /= barycentricSum;
-
-              // Compute the perspective-correct interpolated depth
-              // Compute the perspective-correct interpolated depth
-              // Compute the non-perspective-correct interpolated depth
-              float z0 = positions[0].z / vertices[0].gl_Position.w;
-              float z1 = positions[1].z / vertices[1].gl_Position.w;
-              float z2 = positions[2].z / vertices[2].gl_Position.w;
-              float interpolatedDepth = (z0 * correctedBarycentricCoords.x +
-                                        z1 * correctedBarycentricCoords.y +
-                                        z2 * correctedBarycentricCoords.z);
+            float interpolatedDepth = z0 * correctedBarycentricCoords.x +
+              z1 * correctedBarycentricCoords.y +
+              z2 * correctedBarycentricCoords.z;
 
 
 
-
-            if (weightedBarycentricCoords.x >= 0 && weightedBarycentricCoords.y >= 0 && weightedBarycentricCoords.z >= 0) {
+            if (correctedBarycentricCoords.x >= 0 && correctedBarycentricCoords.y >= 0 && correctedBarycentricCoords.z >= 0) {
                 InFragment inFragment;
                 inFragment.gl_FragCoord = glm::vec4(pixelCenter, interpolatedDepth, 1);
 
@@ -148,14 +115,23 @@ void rasterizeTriangle(GPUMemory& mem, OutVertex* vertices, uint32_t primitiveID
                                                       mem.uniforms[0].v1);
 
 
-            for (int i = 0; i < 3; ++i) {
-                inFragment.attributes[i].v4 = vertices[0].attributes[i].v4 * correctedBarycentricCoords.x +
-                                              vertices[1].attributes[i].v4 * correctedBarycentricCoords.y +
-                                              vertices[2].attributes[i].v4 * correctedBarycentricCoords.z;
-            }
+                for (int i = 0; i < 3; ++i) {
+                    inFragment.attributes[i].v4 = (vertices[0].attributes[i].v4 * correctedBarycentricCoords.x / vertices[0].gl_Position.w) +
+                                                  (vertices[1].attributes[i].v4 * correctedBarycentricCoords.y / vertices[1].gl_Position.w) +
+                                                  (vertices[2].attributes[i].v4 * correctedBarycentricCoords.z / vertices[2].gl_Position.w);
+                    inFragment.attributes[i].v4 /= (correctedBarycentricCoords.x / vertices[0].gl_Position.w +
+                                                    correctedBarycentricCoords.y / vertices[1].gl_Position.w +
+                                                    correctedBarycentricCoords.z / vertices[2].gl_Position.w);
+                }
+
 
                 OutFragment outFragment;
                 mem.programs[0].fragmentShader(outFragment, inFragment, tempShaderInterface);
+
+
+                
+
+                
 
 
                     // Check if the interpolated depth is less than the depth value currently stored in the depth buffer
