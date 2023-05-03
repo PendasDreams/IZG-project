@@ -102,7 +102,7 @@ void rasterizeTriangle(GPUMemory& mem, OutVertex* vertices, uint32_t primitiveID
 
 
 
-            if (correctedBarycentricCoords.x >= 0 && correctedBarycentricCoords.y >= 0 && correctedBarycentricCoords.z >= 0) {
+                if (correctedBarycentricCoords.x >= 0 && correctedBarycentricCoords.y >= 0 && correctedBarycentricCoords.z >= 0) {
                 InFragment inFragment;
                 inFragment.gl_FragCoord = glm::vec4(pixelCenter, interpolatedDepth, 1);
 
@@ -125,8 +125,8 @@ void rasterizeTriangle(GPUMemory& mem, OutVertex* vertices, uint32_t primitiveID
                 }
 
 
-                OutFragment outFragment;
-                mem.programs[0].fragmentShader(outFragment, inFragment, tempShaderInterface);
+                  OutFragment outFragment;
+                  mem.programs[0].fragmentShader(outFragment, inFragment, tempShaderInterface);
 
 
                 
@@ -135,18 +135,45 @@ void rasterizeTriangle(GPUMemory& mem, OutVertex* vertices, uint32_t primitiveID
 
 
                     // Check if the interpolated depth is less than the depth value currently stored in the depth buffer
-                int depthIdx = static_cast<int>(y * mem.framebuffer.width + x);
-                if (interpolatedDepth < mem.framebuffer.depth[depthIdx]) {
+                    int depthIdx = static_cast<int>(y * mem.framebuffer.width + x);
+
+                    // Add a boolean variable to track whether the depth value should be updated
+                    bool shouldUpdateDepth = interpolatedDepth <= mem.framebuffer.depth[depthIdx] && outFragment.gl_FragColor.a > 0.5f;
+
+                    if (shouldUpdateDepth) {
+                        // Update the depth buffer with the new depth value
+                        mem.framebuffer.depth[depthIdx] = interpolatedDepth;
+                    }
+
+
+                    if (interpolatedDepth <= mem.framebuffer.depth[depthIdx] && outFragment.gl_FragColor.a > 0.5f) {
                     // Update the depth buffer with the new depth value
                     mem.framebuffer.depth[depthIdx] = interpolatedDepth;
 
                     // Write the output color to the framebuffer
                     int idx = depthIdx * mem.framebuffer.channels;
-                    mem.framebuffer.color[idx + 0] = static_cast<uint8_t>(outFragment.gl_FragColor.r * 255.f);
-                    mem.framebuffer.color[idx + 1] = static_cast<uint8_t>(outFragment.gl_FragColor.g * 255.f);
-                    mem.framebuffer.color[idx + 2] = static_cast<uint8_t>(outFragment.gl_FragColor.b * 255.f);
-                    mem.framebuffer.color[idx + 3] = static_cast<uint8_t>(outFragment.gl_FragColor.a * 255.f);
-                }
+                   
+                   
+                  // Apply blending
+                  float a = outFragment.gl_FragColor.a;
+                  glm::vec4 frameColor(
+                      static_cast<float>(mem.framebuffer.color[idx + 0]),
+                      static_cast<float>(mem.framebuffer.color[idx + 1]),
+                      static_cast<float>(mem.framebuffer.color[idx + 2]),
+                      static_cast<float>(mem.framebuffer.color[idx + 3]));
+
+                  // With these lines
+                  glm::vec3 frameColorRGB = glm::vec3(frameColor.r, frameColor.g, frameColor.b) / 255.f;
+                  glm::vec3 outputColor = glm::clamp(frameColorRGB * (1 - a) + glm::vec3(outFragment.gl_FragColor) * a, glm::vec3(0.f), glm::vec3(1.f)) * 255.f;
+
+                  // Only write the output color to the framebuffer if the depth value should be updated
+                  if (shouldUpdateDepth) {
+                      mem.framebuffer.color[idx + 0] = static_cast<uint8_t>(outputColor.r);
+                      mem.framebuffer.color[idx + 1] = static_cast<uint8_t>(std::round(outputColor.g));
+                      mem.framebuffer.color[idx + 2] = static_cast<uint8_t>(std::round(outputColor.b));
+                      mem.framebuffer.color[idx + 3] = static_cast<uint8_t>(frameColor.a);
+                  }
+              }
             }
         }
     }
